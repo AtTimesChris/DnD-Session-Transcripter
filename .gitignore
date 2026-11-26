@@ -1,0 +1,24 @@
+# ALLOW-LIST: everything is ignored unless it is named below.
+# A new file (log, CSV, PDF, book, note) can therefore never be uploaded by accident.
+/*
+
+# Needed to install and run
+!/app/
+/app/*
+!/app/*.py
+!/INSTALL.bat
+!/INSTALL_DIARIZATION.bat
+!/RUN.bat
+!/requirements.txt
+!/requirements-torch.txt
+!/requirements-diarization.txt
+
+# Safe, useful extras
+!/README.md
+!/config.example.json
+!/CHECK_UPDATES.bat
+!/.gitignore
+!/.gitattributes
+
+# Deliberately NOT uploaded: config.json, data/, recordings/, logs/, backups/, runtime/, .venv/,
+# book folders, *.CSV, *.pdf, tests/, RUN_TESTS.bat, CHANGELOG.md and the history/notes documents.

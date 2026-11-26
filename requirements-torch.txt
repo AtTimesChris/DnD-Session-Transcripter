@@ -1,0 +1,3 @@
+# Pinned CUDA 12.8 build of PyTorch. Installed in the same pip run as pyannote so the resolver never swaps it for the PyPI build.
+torch==2.8.0+cu128
+torchaudio==2.8.0+cu128

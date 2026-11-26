@@ -1,0 +1,11 @@
+PySide6>=6.7,<7
+faster-whisper==1.2.1
+ctranslate2==4.8.4
+# Pinned here (same version as requirements-diarization.txt) so the first install does not fetch a newer hub that the speaker step then has to downgrade.
+huggingface_hub==0.36.2
+imageio-ffmpeg>=0.5,<1
+keyring>=25,<27
+pypdf>=5,<7
+py7zr>=0.22,<1
+# v2.47: the automated tests (RUN_TESTS.bat). Small; not used while the program runs.
+pytest>=8,<10

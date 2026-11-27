@@ -12,7 +12,7 @@ echo.>>"%LSK_LOG%"
 echo =====================================================>>"%LSK_LOG%"
 echo [%date% %time%] APPLICATION STARTED>>"%LSK_LOG%"
 echo =====================================================>>"%LSK_LOG%"
-echo Local SessionKeeper v2.48 output is being saved to logs\LocalSessionKeeper.log
+echo Local SessionKeeper v2.49 output is being saved to logs\LocalSessionKeeper.log
 ".venv\Scripts\python.exe" app\run_logged.py --log "%LSK_LOG%" -- ".venv\Scripts\python.exe" -m app.main
 set "APP_EXIT=%ERRORLEVEL%"
 echo [%date% %time%] APPLICATION EXIT CODE: %APP_EXIT%>>"%LSK_LOG%"

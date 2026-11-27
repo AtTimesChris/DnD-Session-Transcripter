@@ -77,6 +77,8 @@ def _runs(line):
             r = r[:-1]
         if len(r) > 4:
             r = r[:4]
+            while r and r[-1].group(0).casefold() in _CONNECT:   # v2.49: "Sleight of Hand and" (cut at four words)
+                r = r[:-1]
         if r:
             phrase = line[r[0].start():r[-1].end()].strip(" -'’")
             phrase = re.sub(r"(['’]s|['’])$", "", phrase)   # "Strahd's" -> Strahd
@@ -143,6 +145,19 @@ def book_terms(text, limit=MAX_TERMS):
         else:
             name_like = not all(ordinary) or mid.get(phrase, 0) >= 2
         out.append({"term": phrase, "name_like": bool(name_like), "count": count})
+    # v2.49: every spell described in the book is a name, however the book writes it in sentences (the 2014 Player's
+    # Handbook writes spells in lower case, so only 581 of its words were names)
+    try:
+        from .spell_book import parse_spells
+        spells = {v["name"] for v in parse_spells(text).values()}
+    except Exception:
+        spells = set()
+    have = {t["term"]: t for t in out}
+    for name in spells:
+        if name in have:
+            have[name]["name_like"] = True
+        elif 3 <= len(name) <= 64:
+            out.append({"term": name, "name_like": True, "count": 1})
     out.sort(key=lambda t: (-t["name_like"], -t["count"], t["term"].casefold()))
     out = out[:limit]
     out.sort(key=lambda t: t["term"].casefold())

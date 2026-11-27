@@ -365,6 +365,8 @@ class Database:
         ref_cols = {r[1] for r in self.conn.execute("PRAGMA table_info(reference_sources)")}
         if "metadata_json" not in ref_cols:
             self.conn.execute("ALTER TABLE reference_sources ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'")
+        if "use_level" not in ref_cols:   # v2.47: Campaign book / Rules / Other / Off ('' = the default)
+            self.conn.execute("ALTER TABLE reference_sources ADD COLUMN use_level TEXT NOT NULL DEFAULT ''")
         dict_cols = {r[1] for r in self.conn.execute("PRAGMA table_info(campaign_dictionary)")}
         # v2.36: also_known_as = other real names of the same entry (Creeping Lyn for Endelyn Moongrave). The old
         # aliases column keeps its data and meaning: wrong spellings that should become the canonical name.
@@ -963,11 +965,30 @@ class Database:
                 out.update(p.casefold() for p in str(n).split() if len(p) >= 4)
         return out
 
+    def campaign_rules(self, campaign_id):
+        """(campaign name, rules edition from its Game system) (v2.47)."""
+        from .rules_edition import campaign_edition
+        c = self.get_campaign(campaign_id)
+        return (c["name"] if c else ""), campaign_edition(c["game_system"] if c else "")
+
+    def book_levels(self, campaign_id):
+        """{source id: (level, set_by_you)} for every book of the campaign (v2.47)."""
+        from .rules_edition import level_of
+        name, edition = self.campaign_rules(campaign_id)
+        return {s["id"]: level_of(s, name, edition) for s in self.reference_source_list(campaign_id)}
+
+    def set_reference_level(self, source_id, level):
+        """v2.47: '' puts the book back on its default level."""
+        with self.conn:
+            self.conn.execute("UPDATE reference_sources SET use_level=? WHERE id=?", (level or "", source_id))
+
     def book_names(self, campaign_id):
-        """The ticked names of every book in the reference library: [(name, book file name)] (v2.46)."""
-        return [(r[0], r[1]) for r in self.conn.execute(
-            "SELECT rt.term, rs.source_name FROM reference_terms rt JOIN reference_sources rs ON rs.id=rt.source_id "
-            "WHERE rt.campaign_id=? AND rt.approved_for_whisper=1 ORDER BY rt.term COLLATE NOCASE", (campaign_id,))]
+        """The ticked names of the books that are not Off: [(name, book file name, level)] (v2.46; level v2.47)."""
+        levels = self.book_levels(campaign_id)
+        return [(r[0], r[1], levels.get(r[2], ("other", False))[0]) for r in self.conn.execute(
+            "SELECT rt.term, rs.source_name, rs.id FROM reference_terms rt JOIN reference_sources rs ON rs.id=rt.source_id "
+            "WHERE rt.campaign_id=? AND rt.approved_for_whisper=1 ORDER BY rt.term COLLATE NOCASE", (campaign_id,))
+            if levels.get(r[2], ("other", False))[0] != "off"]
 
     def add_campaign_name(self, campaign_id, name, category="NPC", also_known_as=""):
         """v2.46: add one name to Campaign names (from Correct names). An existing name is left as it is (False)."""
@@ -1219,14 +1240,18 @@ class Database:
         return source_id
 
     def reference_texts(self, campaign_id):
-        """The text of every book imported in this campaign's reference library (v2.42: read for spell dice). Local only."""
-        return [r[0] or "" for r in self.conn.execute("SELECT content_text FROM reference_sources WHERE campaign_id=?", (campaign_id,))]
+        """The text of the campaign's books for spell dice (v2.42), v2.47: in the order they are trusted (the Rules books of
+        the campaign's edition first) and without the books set to Off. Local only."""
+        from .rules_edition import spell_order
+        name, edition = self.campaign_rules(campaign_id)
+        order = spell_order(self.reference_source_list(campaign_id), name, edition)
+        return [self.reference_content(s["id"]) for s in order]
 
     # ---- v2.43: D&D books window ----
     def reference_source_list(self, campaign_id):
         """Every book in the campaign's reference library, oldest import first, with its size and word counts."""
         return [dict(r) for r in self.conn.execute(
-            "SELECT rs.id, rs.source_path, rs.source_name, rs.source_category, rs.content_hash, rs.indexed_at, rs.metadata_json, "
+            "SELECT rs.id, rs.source_path, rs.source_name, rs.source_category, rs.content_hash, rs.indexed_at, rs.metadata_json, rs.use_level, "
             "length(rs.content_text) AS size, "
             "(SELECT COUNT(*) FROM reference_terms rt WHERE rt.source_id=rs.id) AS terms, "
             "(SELECT COUNT(*) FROM reference_terms rt WHERE rt.source_id=rs.id AND rt.approved_for_whisper=1) AS approved "

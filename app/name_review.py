@@ -14,6 +14,8 @@ Two kinds of suggestion:
 import difflib
 import re
 
+from .rules_edition import LEVEL_THRESHOLD, LEVEL_RANK, LEVEL_LABEL
+
 _TOKEN = re.compile(r"[A-Za-z][A-Za-z'’-]{3,}")
 _POSSESSIVE = re.compile(r"(['’]s|['’])$")
 
@@ -168,49 +170,81 @@ class NameIndex:
         for c in self.canonical:
             self.correct_words.update(p.casefold() for p in c.split())
         # v2.46: book names, by first letter and length (a misheard name nearly always keeps its first letter, and
-        # this keeps 30,000 book names fast)
+        # this keeps 30,000 book names fast). v2.47: each with its book's level (Campaign book / Rules / Other), and
+        # names of up to four words ("The Hall of Illusions")
         self.book, self.book_source = {}, {}
+        self.book_exact, self.book_sig, self.book_phrase = {}, {}, {}
         self.known_words = {str(w).casefold() for w in known_words if w}
-        for name, source in book_names:
-            name = str(name or "").strip()
-            if len(name) < 4 or name.casefold() in canon_folded or len(name.split()) > 2:
+        for item in book_names:
+            name, source = str(item[0] or "").strip(), item[1]
+            level = item[2] if len(item) > 2 and item[2] in LEVEL_THRESHOLD else "rules"
+            if level == "off" or len(name) < 4 or name.casefold() in canon_folded:
                 continue
+            if name.split()[-1].casefold() in ("and", "of", "the", "or", "a", "to"):
+                continue   # a piece of a longer name ("Sleight of Hand and"), found before v2.49
             key = name.casefold()
-            self.known_words.add(key)
-            if key in self.book_source:
+            parts = name.split()
+            if len(parts) > 4:
                 continue
+            self.known_words.add(key)
+            if len(parts) >= 2:
+                words = tuple(p.casefold() for p in parts)
+                old = self.book_exact.get(words)
+                if old is None or LEVEL_RANK[level] < LEVEL_RANK[old[2]]:
+                    self.book_exact[words] = (name, source, level)
+            if len(parts) >= 3 and level == "campaign":
+                # v2.49: "House of Illusions" -> Hall of Illusions (one word differs). Campaign book only: from the rules
+                # books it offered "your bonus action" -> Rampage Bonus Action and the like
+                for j in range(len(parts)):
+                    sig = tuple("*" if i == j else w for i, w in enumerate(words))
+                    self.book_sig.setdefault(sig, []).append((name, source, level, j))
+            if len(parts) >= 3:
+                self.book_phrase.setdefault((len(parts), key[0]), []).append((name, source, level))
+                continue
+            if key in self.book_source:
+                if LEVEL_RANK[level] >= LEVEL_RANK[self.book_source[key][1]]:
+                    continue
             # only names worth offering: 5+ letters ("Eric", "King", "Tegal" gave "Erica", "Kling", "Teal"), and for two
             # words, both capitalised and 3+ letters
-            parts = name.split()
             if len(parts) == 1 and len(name) < 5:
                 continue
             if len(parts) == 2 and not all(p[:1].isupper() and len(p) >= 3 for p in parts):
                 continue
-            self.book_source[key] = source
-            self.book.setdefault((key[0], len(key)), []).append(name)
+            if key not in self.book_source:
+                self.book.setdefault((key[0], len(key)), []).append(name)
+            self.book_source[key] = (source, level)
 
-    def book_near(self, heard, threshold):
-        """The closest book name to a heard word or two words, or None: (score, name, book)."""
+    def book_near(self, heard, threshold=0.0, n_words=None):
+        """The best book name for a heard word or two words, or None: (score, name, book, level). v2.47: the highest
+        level with a name close enough wins (Campaign book 80%, Rules 85%, Other 92%, never below `threshold`); within
+        a level, the closest. It used to be the closest of all books, any book."""
         key = heard.casefold()
         if len(key) < 5:
             return None
         cache = self.__dict__.setdefault("_book_cache", {})
         if (key, threshold) in cache:
             return cache[(key, threshold)]
-        best = None
+        found = []
         same = {key.rstrip("s"), key[:-2] if key.endswith("es") else key, re.sub(r"['’]s$", "", key)}
         sm = difflib.SequenceMatcher(None, "", key)   # the heard word is the cached side; quick bounds skip most names
+        low = min(t for t in LEVEL_THRESHOLD.values() if t)
         for n in range(len(key) - 2, len(key) + 3):
             for name in self.book.get((key[:1], n), ()):
                 folded = name.casefold()
                 if folded == key or folded in same:
                     continue   # the name itself, or said as a plural or possessive ("Kenkus")
+                source, level = self.book_source[folded]
+                need = max(threshold, LEVEL_THRESHOLD[level])
                 sm.set_seq1(folded)
-                if sm.real_quick_ratio() < threshold or sm.quick_ratio() < threshold:
+                if sm.real_quick_ratio() < max(low, threshold) or sm.quick_ratio() < need:
                     continue
                 r = sm.ratio()
-                if r >= threshold and (best is None or r > best[0]):
-                    best = (r, name, self.book_source.get(folded, ""))
+                if r >= need:
+                    found.append((LEVEL_RANK[level], -r, name, source, level))
+        best = None
+        if found:
+            rank, neg, name, source, level = min(found)
+            best = (-neg, name, source, level)
         cache[(key, threshold)] = best
         return best
 
@@ -290,8 +324,8 @@ def find_suggestions(segments, index, lower_vocab, threshold=DEFAULT_THRESHOLD, 
                     found.append({"heard": m.group(0), "offset": m.start(), "length": m.end() - m.start(),
                                   "options": options, "kind": "known", "score": 1.0})
         _split_names(text, index, lower_vocab, near, found, taken, skip_known)  # before single words: the pair is more specific
-        if use_books:
-            _book_pairs(text, index, lower_vocab, found, taken, max(threshold, book_threshold), skip_known)
+        if use_books or skip_known:
+            _book_phrases(text, index, lower_vocab, found, taken, threshold, skip_known, use_books)
         for m in _TOKEN.finditer(text):
             word = m.group(0)
             stem = _POSSESSIVE.sub("", word)
@@ -301,17 +335,17 @@ def find_suggestions(segments, index, lower_vocab, threshold=DEFAULT_THRESHOLD, 
             if folded in lower_vocab or folded in index.correct_words or folded in index.known:
                 continue
             if skip_known and folded in index.known_words:
-                continue   # v2.46: already spelled like a known name ("Garry" once you chose it)
+                continue   # v2.46: already spelled like a known name (a word you chose before)
             span = (m.start(), m.start() + len(stem))
             if any(a < span[1] and span[0] < b for a, b in taken):
                 continue
             best = near(stem)
             if not best and use_books:
-                b = index.book_near(stem, max(threshold, book_threshold))
+                b = index.book_near(stem, threshold)
                 if b and not index.is_rejected(stem, b[1]):
                     taken.append(span)
                     found.append({"heard": stem, "offset": span[0], "length": len(stem), "options": [b[1]],
-                                  "kind": "book", "score": round(b[0], 2), "book": b[2]})
+                                  "kind": "book", "score": round(b[0], 2), "book": b[2], "level": b[3]})
                 continue
             if not best:
                 continue
@@ -339,32 +373,90 @@ _PAIR = re.compile(r"(?<![\w'’])([A-Za-z]{2,})[ -]([A-Za-z]{2,})(?![\w'’])")
 SPLIT_STRICT_THRESHOLD = 0.85
 
 
-def _book_pairs(text, index, lower_vocab, found, taken, threshold, skip_known):
-    """v2.46: two words close to a two-word book name ("Chromatic Orbs", "Vicious Mockry"). At least one of the two
-    words must be capitalised and not an ordinary word."""
-    pos = 0
-    while True:
-        m = _PAIR.search(text, pos)
-        if not m:
-            return
-        pos = m.start(2)
-        first, second = m.group(1), m.group(2)
-        span = (m.start(), m.end())
-        if any(a < span[1] and span[0] < b for a, b in taken):
-            continue
-        pair = first + " " + second
-        if not all(w[0].isupper() and len(w) >= 3 for w in (first, second)):
-            continue   # "and Morgan", "Alex is": two capitalised words only
-        if pair.casefold() in index.correct_words or (skip_known and pair.casefold() in index.known_words):
-            continue
-        b = index.book_near(pair, threshold)
-        if not b or " " not in b[1] or index.is_rejected(pair, b[1]):
-            continue
-        if _POSSESSIVE.sub("", pair).casefold().rstrip("s") == b[1].casefold().rstrip("s"):
-            continue   # the right name, said as a plural or possessive
-        taken.append(span)
-        found.append({"heard": pair, "offset": span[0], "length": span[1] - span[0], "options": [b[1]],
-                      "kind": "book", "score": round(b[0], 2), "book": b[2]})
+_WORDS = re.compile(r"[A-Za-z][A-Za-z'’-]*")
+_SENT_START = re.compile(r"(?:^|[.?!…:;\"“”]\s*)$")
+_PHRASE_STOP = {"the", "of", "and", "a", "an", "in", "on", "to", "at", "for", "with", "is", "it", "you", "i"}
+
+
+def _book_phrases(text, index, lower_vocab, found, taken, threshold, skip_known, use_books):
+    """v2.47: book names of two to four words, compared with the same number of words in the line.
+    - Already spelled right (capitals aside: "hall of Illusions"): left alone, and no word inside it is "corrected".
+    - Three or more words with only one different ("House of Illusions" -> Hall of Illusions): offered from the
+      Campaign book whatever the overall score, as "Possible: one word differs".
+    - Otherwise close enough for its book's level (80 / 85 / 92%), with at least one capitalised word: offered.
+    The highest level wins, then the closest."""
+    words = list(_WORDS.finditer(text))
+
+    def windows(n):
+        for i in range(len(words) - n + 1):
+            ws = words[i:i + n]
+            if any(text[a.end():b.start()].strip() for a, b in zip(ws, ws[1:])):
+                continue   # punctuation between the words: not one name
+            yield ws
+    # first every name already spelled right (capitals aside), longest first: those words are left alone
+    for n in (4, 3, 2):
+        for ws in windows(n):
+            span = (ws[0].start(), ws[-1].end())
+            if tuple(w.group(0).casefold() for w in ws) in index.book_exact and not any(a < span[1] and span[0] < b for a, b in taken):
+                taken.append(span)
+    if not use_books:
+        return
+    cache = index.__dict__.setdefault("_phrase_cache", {})
+    for n in (4, 3, 2):
+        for ws in windows(n):
+            span = (ws[0].start(), ws[-1].end())
+            if any(a < span[1] and span[0] < b for a, b in taken):
+                continue
+            heard = text[span[0]:span[1]]
+            folded = tuple(w.group(0).casefold() for w in ws)
+            if skip_known and " ".join(folded) in index.known_words:
+                continue
+            cands = []
+            if n >= 3:
+                strong = [w for w in folded if len(w) >= 4 and w not in _PHRASE_STOP]
+                for j in range(n):
+                    if len(folded[j]) < 3 or folded[j] in _PHRASE_STOP:
+                        continue   # the different word must be a real word ("Shape of the" is not "Shape of Calamity")
+                    sig = tuple("*" if k == j else w for k, w in enumerate(folded))
+                    for name, source, level, slot in index.book_sig.get(sig, ()):
+                        if slot == j and name.split()[j].casefold() not in _PHRASE_STOP and any(
+                                w for k, w in enumerate(folded) if k != j and w in strong):
+                            cands.append((LEVEL_RANK[level], -_ratio(heard, name), name, source, level, "possible"))
+            # a word that shows it is a name: capitalised in the middle of a sentence, or not an ordinary word
+            namey = any((w.group(0)[0].isupper() and not _SENT_START.search(text[:w.start()]))
+                        or (len(w.group(0)) >= 4 and w.group(0).casefold() not in lower_vocab and w.group(0).casefold() not in _PHRASE_STOP)
+                        for w in ws)
+            if namey and not cands:
+                key = " ".join(folded)
+                if (key, threshold) not in cache:
+                    found_here = []
+                    if n >= 3:
+                        sm = difflib.SequenceMatcher(None, "", key)
+                        for name, source, level in index.book_phrase.get((n, key[0]), ()):
+                            if abs(len(name) - len(key)) > 4:
+                                continue
+                            need = max(threshold, LEVEL_THRESHOLD[level])
+                            sm.set_seq1(name.casefold())
+                            if sm.real_quick_ratio() < need or sm.quick_ratio() < need:
+                                continue
+                            r = sm.ratio()
+                            if r >= need:
+                                found_here.append((LEVEL_RANK[level], -r, name, source, level, "book"))
+                    elif all(w.group(0)[0].isupper() and len(w.group(0)) >= 3 for w in ws):
+                        b = index.book_near(heard, threshold)
+                        if b and " " in b[1]:
+                            found_here.append((LEVEL_RANK[b[3]], -b[0], b[1], b[2], b[3], "book"))
+                    cache[(key, threshold)] = found_here
+                cands.extend(cache[(key, threshold)])
+            hc = heard.casefold()
+            cands = [c for c in cands if not index.is_rejected(heard, c[2])   # the name said as a plural / possessive is right
+                     and hc not in (c[2].casefold() + "s", c[2].casefold() + "es", c[2].casefold() + "'s", c[2].casefold() + "’s")]
+            if not cands:
+                continue
+            _rank, neg, name, source, level, kind = min(cands)
+            taken.append(span)
+            found.append({"heard": heard, "offset": span[0], "length": span[1] - span[0], "options": [name],
+                          "kind": kind, "score": round(-neg, 2), "book": source, "level": level})
 
 
 def _split_names(text, index, lower_vocab, near, found, taken, skip_known=False):

@@ -1533,9 +1533,8 @@ class MainWindow(QMainWindow):
         book_terms = []
         if rec:
             # v2.46: book names are passed apart (matched more strictly); they were mixed in with the campaign names
-            book_terms = [x[0] for x in self.db.conn.execute(
-                "SELECT DISTINCT term FROM reference_terms WHERE campaign_id=? AND approved_for_whisper=1 ORDER BY term COLLATE NOCASE",
-                (rec["campaign_id"],)).fetchall()]
+            # v2.47: with each book's level (books set to Off are left out)
+            book_terms = [(t, level) for t, _book, level in self.db.book_names(rec["campaign_id"])]
             dictionary_rows=self.db.campaign_dictionary_entries(rec["campaign_id"])
             vocabulary.extend(x["canonical_name"] for x in dictionary_rows if x["approved_for_whisper"])
             vocabulary.extend(a.strip() for x in dictionary_rows for a in str(x["also_known_as"] or "").split(",") if a.strip())

@@ -134,11 +134,17 @@ class TranscriptEditor(QDialog):
             self._vocabulary_by_length.setdefault(len(term), []).append(term)
         # v2.46: book names (ticked in D&D books…) by first letter and length, matched at 80% (campaign names: 70%):
         # 30,000 book names would otherwise make the panel slow and noisy
-        self._book_terms={}
+        # v2.47: (name, level) pairs: Campaign book names at 75%, Rules 80%, Other 87% (Off books are not passed)
+        from .rules_edition import LEVEL_THRESHOLD
+        self._book_terms={}; self._book_need={}
         campaign={t.casefold() for t in self.vocabulary_terms}
-        for term in set(book_terms or []):
+        for item in set(book_terms or []):
+            term,level=(item,"rules") if isinstance(item,str) else (item[0],item[-1])
             if len(term)>=4 and term.casefold() not in campaign:
-                self._book_terms.setdefault((term[0].casefold(),len(term)),[]).append(term)
+                need=(LEVEL_THRESHOLD.get(level) or 0.85)-0.05
+                if term not in self._book_need or need<self._book_need[term]:
+                    if term not in self._book_need: self._book_terms.setdefault((term[0].casefold(),len(term)),[]).append(term)
+                    self._book_need[term]=need
         self._aliases_by_length={}
         for alias, canonical in self.vocabulary_aliases.items():
             self._aliases_by_length.setdefault(len(alias), []).append((alias, canonical))
@@ -335,7 +341,7 @@ class TranscriptEditor(QDialog):
         split.setHandleWidth(8); split.setChildrenCollapsible(False)
         suggestion_box=QGroupBox("Vocabulary suggestions")
         suggestion_layout=QVBoxLayout(suggestion_box)
-        self.suggestion_hint=QLabel("Campaign names (70% close or more) and names ticked in D&D books… (80%, capitalised words only). Suggestions are never applied automatically."); self.suggestion_hint.setWordWrap(True); suggestion_layout.addWidget(self.suggestion_hint)
+        self.suggestion_hint=QLabel("Campaign names (70% close or more) and names ticked in D&D books… (by the book's level: Campaign book 75%, Rules 80%, Other 87%; capitalised words only). Suggestions are never applied automatically."); self.suggestion_hint.setWordWrap(True); suggestion_layout.addWidget(self.suggestion_hint)
         self.suggestion_list=QListWidget(); suggestion_layout.addWidget(self.suggestion_list,1)
         self.accept_suggestion_btn=QPushButton("Apply selected suggestion")
         self.reject_suggestion_btn=QPushButton("Dismiss suggestion")
@@ -2536,7 +2542,7 @@ class TranscriptEditor(QDialog):
                 for length in range(max(1,len(word)-2),len(word)+3):
                     for term in self._book_terms.get((folded[0],length), ()):
                         if term.casefold()==folded: continue
-                        ratio=similar(folded,term.casefold(),0.80)
+                        ratio=similar(folded,term.casefold(),self._book_need.get(term,0.80))
                         if ratio:
                             candidates.append((ratio,word,term))
         seen=set()

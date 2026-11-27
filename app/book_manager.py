@@ -163,8 +163,8 @@ try:
 except ImportError:   # the tests import the helpers without Qt
     QDialog = object
 
-COLS = ["#", "Book", "Category", "D&D Beyond", "File", "Imported", "Size", "Names", "Check"]   # v2.46: Names (was Whisper words)
-C_FILE, C_CHECK = 4, 8
+COLS = ["#", "Book", "Level", "Category", "D&D Beyond", "File", "Imported", "Size", "Names", "Check"]   # v2.49: Level
+C_LEVEL, C_FILE, C_CHECK = 2, 5, 9
 
 
 def ddb_summary(metadata_json):
@@ -220,6 +220,10 @@ class BookManagerDialog(QDialog):
             ("Re-link to file…", self._relink, "Point the selected book at another file (for example the fixed copy) and read its text."),
             ("Re-read from file", self._reread, "Read the selected books again from their own files (after you fixed a file in place)."),
             ("Change category…", self._category, "Set the category of the selected books."),
+            ("Set level…", self._level, "How much the selected books count for Correct names and the Suggestions panel in this "
+             "campaign: Campaign book (the adventure you are running, 80% close, wins over the others), Rules (the core books "
+             "of the campaign's edition, 85%), Other (92%) or Off (never used, and not read for spell dice). “Default” "
+             "follows the campaign's Game system."),
             ("D&&D Beyond details…", self._ddb, "Look the selected books (or all) up in D&D Beyond's public catalogue (no sign-in "
              "needed; only the request is sent, never your files): the matching book, its rules edition (2014 / 2024), "
              "publisher and a suggested category. The window opens at once; dates fill in as the pages are read."),
@@ -248,10 +252,15 @@ class BookManagerDialog(QDialog):
         folder = self._folder()
         self.folder_label.setText(folder or "(not set: choose the folder you keep your book files in)")
         problems = book_status(self.sources, books_folder=folder)
+        from .rules_edition import level_of, LEVEL_LABEL
+        cname, edition = self.db.campaign_rules(self.campaign_id) if hasattr(self.db, "campaign_rules") else ("", "")
+        self.levels = {s["id"]: level_of(s, cname, edition) for s in self.sources}
         self.table.setRowCount(len(self.sources))
         for r, s in enumerate(self.sources):
             when = str(s["indexed_at"] or "")[:16].replace("T", " ")
-            values = [r + 1, s["source_name"], s["source_category"], ddb_summary(s.get("metadata_json")), s["source_path"], when,
+            level, mine = self.levels[s["id"]]
+            values = [r + 1, s["source_name"], LEVEL_LABEL[level] + ("" if mine else " (default)"), s["source_category"],
+                      ddb_summary(s.get("metadata_json")), s["source_path"], when,
                       f"{(s['size'] or 0) / 1e6:.1f} MB", f"{s['approved']} of {s['terms']}",
                       "; ".join(problems[s["id"]]) or "OK"]
             for c, v in enumerate(values):
@@ -260,11 +269,21 @@ class BookManagerDialog(QDialog):
                     item.setForeground(Qt.red if any(p.startswith(("file not", "the file", "a newer")) for p in problems[s["id"]]) else Qt.darkYellow)
                 if c == C_FILE:
                     item.setToolTip(s["source_path"])
+                if c == C_LEVEL:
+                    item.setToolTip("Set by you." if mine else "The default from the campaign's Game system and this book (Set level… "
+                                    "to choose).")
+                    if level == "off":
+                        item.setForeground(Qt.gray)
+                    elif level == "campaign":
+                        f = item.font(); f.setBold(True); item.setFont(f)
                 self.table.setItem(r, c, item)
         self.table.setColumnWidth(C_FILE, 380)
         self.table.resizeRowsToContents()
         flagged = sum(1 for p in problems.values() if p)
         text = f"{len(self.sources)} book(s) · {flagged} with something to check"
+        names = {"2024": "2024 rules (5.5e)", "2014": "2014 rules (5e)", "mixed-2024": "both editions, 2024 first",
+                 "mixed-2014": "both editions, 2014 first"}
+        text += f" · this campaign uses {names.get(edition, 'no D&D edition set (Campaign → Edit…)')}"
         missing, relink = folder_status(self.sources, folder)
         if missing:
             text += (f" · {len(missing)} file(s) in your books folder are not imported: " + ", ".join(missing[:8])
@@ -392,6 +411,26 @@ class BookManagerDialog(QDialog):
         self._log("Reference sources re-read: %s", done)
         self._fill()
         QMessageBox.information(self, "Re-read", f"Re-read {done} book(s)." + ("\n\n" + "\n".join(issues) if issues else ""))
+
+    def _level(self):
+        """v2.49: the selected books' level in this campaign (or back to the default)."""
+        rows = self._need()
+        if not rows:
+            return
+        from .rules_edition import LEVELS, LEVEL_LABEL
+        choices = ["Default (from the Game system)"] + [label for _k, label, _t in LEVELS]
+        value, ok = QInputDialog.getItem(self, "Set level", f"Level for {len(rows)} book(s) in this campaign:\n\n"
+                                         "Campaign book: the adventure you are running (80% close, wins over the rest)\n"
+                                         "Rules: the core books of this campaign's edition (85%)\n"
+                                         "Other: supplements, the other edition's core books (92%)\n"
+                                         "Off: never used for names, not read for spell dice", choices, 0, False)
+        if not ok:
+            return
+        key = "" if value.startswith("Default") else next(k for k, label, _t in LEVELS if label == value)
+        for s in rows:
+            self.db.set_reference_level(s["id"], key)
+        self._log("Book level set to %s for %s book(s)", key or "default", len(rows))
+        self._fill()
 
     def _category(self):
         rows = self._need()

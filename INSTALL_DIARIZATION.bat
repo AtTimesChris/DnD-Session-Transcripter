@@ -1,7 +1,7 @@
 @echo off
 setlocal EnableExtensions
 cd /d "%~dp0"
-title Local SessionKeeper v2.48 - Speaker identification setup
+title Local SessionKeeper v2.49 - Speaker identification setup
 set "QUIET=" & set "FORCE="
 for %%A in (%*) do (
  if /I "%%~A"=="/quiet" set "QUIET=1"

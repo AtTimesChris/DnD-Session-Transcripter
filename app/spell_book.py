@@ -13,10 +13,17 @@ Only reads; the book text never leaves the computer. A book without the spell de
 import hashlib
 import re
 
-_HEAD = re.compile(r"(?m)^#{2,6}\s+(?P<name>[^\n#]{2,60}?)\s*\n+\s*\*(?P<kind>Level\s+(?P<lvl>[1-9])\s+[A-Za-z]+|[A-Za-z]+\s+Cantrip)[^*\n]*\*")
-_DAMAGE = re.compile(r"\b(?P<c>\d{1,2})d(?P<s>4|6|8|10|12|20)\b(?:\s*\+\s*\d+)?\s+(?:(?P<type>[A-Z][a-z]+)\s+)?damage\b")
+# v2.49: also the 2014 way of writing it ("*3rd-level evocation*", "*evocation cantrip*")
+_HEAD = re.compile(r"(?m)^#{2,6}\s+(?P<name>[^\n#]{2,60}?)\s*\n+\s*\*(?P<kind>(?i:Level\s+(?P<lvl>[1-9])\s+[A-Za-z]+|"
+                   r"(?P<lvl2>[1-9])(?:st|nd|rd|th)-level\s+[A-Za-z]+|[A-Za-z]+\s+Cantrip))[^*\n]*\*")
+# v2.49: the damage type in any case ("8d6 fire damage" in the 2014 books, "8d6 Fire damage" in the 2024 ones). Before, only
+# a capitalised type was read, so no 2014 spell had damage dice.
+_TYPES = "acid|bludgeoning|cold|fire|force|lightning|necrotic|piercing|poison|psychic|radiant|slashing|thunder"
+_DAMAGE = re.compile(rf"\b(?P<c>\d{{1,2}})d(?P<s>4|6|8|10|12|20)\b(?:\s*\+\s*\d+)?\s+(?:(?P<type>(?i:{_TYPES}))\s+)?damage\b")
 _HIGHER = re.compile(r"increases?\s+by\s+(?P<c>\d{1,2})d(?P<s>4|6|8|10|12|20)\s+for\s+(?:each|every)\s+(?:spell\s+)?slot\s+level\s+above\s+(?P<lvl>\d)", re.I)
-_CANTRIP_STEPS = re.compile(r"levels?\s+5\s*\((?P<a>\d)d\d+\),\s*11\s*\((?P<b>\d)d\d+\),\s*and\s*17\s*\((?P<c>\d)d\d+\)", re.I)
+_CANTRIP_STEPS = re.compile(r"levels?\s+5\s*\((?P<a>\d)d\d+\),\s*11\s*\((?P<b>\d)d\d+\),\s*and\s*17\s*\((?P<c>\d)d\d+\)"
+                            r"|5th\s+level\s*\((?P<a2>\d)d\d+\),\s*11th\s+level\s*\((?P<b2>\d)d\d+\),\s*and\s*17th\s+level\s*\((?P<c2>\d)d\d+\)",
+                            re.I)   # v2.49: and the 2014 wording
 _CACHE = {}
 
 
@@ -36,7 +43,7 @@ def parse_spells(text):
         if stop:
             body = body[:stop.start()]
         name = " ".join(m.group("name").split()).strip("*_ ")
-        level = int(m.group("lvl")) if m.group("lvl") else 0
+        level = int(m.group("lvl") or m.group("lvl2") or 0)
         d = _DAMAGE.search(body)
         h = _HIGHER.search(body)
         steps = _CANTRIP_STEPS.search(body) if level == 0 else None
@@ -44,7 +51,7 @@ def parse_spells(text):
                                 "dice": (int(d.group("c")), int(d.group("s"))) if d else None,
                                 "type": (d.group("type") or "").capitalize() if d else "",
                                 "higher": (int(h.group("c")), int(h.group("s"))) if h and int(h.group("lvl")) == level else None,
-                                "cantrip_steps": tuple(int(steps.group(k)) for k in "abc") if steps else None}
+                                "cantrip_steps": tuple(int(steps.group(k) or steps.group(k + "2")) for k in "abc") if steps else None}
     if len(_CACHE) > 60:
         _CACHE.clear()
     _CACHE[key] = out

@@ -17,8 +17,12 @@ C_USE, C_PLAY, C_TIME, C_SPEAKER, C_HEARD, C_CHANGE, C_WHY, C_CONTEXT = range(le
 def _why(s):
     if s["kind"] == "known":
         return "Known mishearing"
-    if s["kind"] == "book":
-        return f"Book name ({s['score']:.0%} close) · {str(s.get('book', '')).rsplit('.', 1)[0]}"
+    if s["kind"] in ("book", "possible"):
+        from .rules_edition import LEVEL_LABEL
+        where = str(s.get("book", "")).rsplit(".", 1)[0] + (f" ({LEVEL_LABEL.get(s.get('level'), '')})" if s.get("level") else "")
+        if s["kind"] == "possible":   # v2.47: one word of a longer name differs ("House of Illusions")
+            return f"Possible: one word differs ({s['score']:.0%}) · {where}"
+        return f"Book name ({s['score']:.0%} close) · {where}"
     return (f"Split name ({s['score']:.0%} close)" if s["kind"] == "split" else f"Near miss ({s['score']:.0%} close)")
 
 
@@ -74,12 +78,14 @@ class NameReviewDialog(QDialog):
         self.hide_known.setChecked(True)
         self.hide_known.setToolTip("A word spelled exactly like a name in your books or your Obsidian notes, or a word you chose "
                                    "here before (for example “Garry”), is not offered as a misspelling of another name.")
-        self.use_books = QCheckBox(f"Also suggest names from your D&&D books (at least {int(BOOK_THRESHOLD * 100)}% close)")
+        self.use_books = QCheckBox("Also suggest names from your D&&D books (Campaign book 80%, Rules 85%, Other 92%)")
         self.use_books.setChecked(bool(getattr(index, "book", None)))
         self.use_books.setEnabled(bool(getattr(index, "book", None)))
         self.use_books.setToolTip("When no campaign name is close, a name ticked in D&D books… (a spell, monster, place or person "
-                                  "from the books) is offered, with the book it comes from. Stricter than campaign names, "
-                                  "because there are many more of them.")
+                                  "from the books) is offered, with the book it comes from. Each book's level (set in D&D books…) "
+                                  "decides how close it must be, and the highest level wins: the adventure you are running first, "
+                                  "then the rules books. Books set to Off are never used. A longer name from the Campaign book with one "
+                                  "word different (“House of Illusions”) is offered as Possible.")
         for w in (self.hide_known, self.use_books):
             w.toggled.connect(lambda *_: self._scan()); opts.addWidget(w)
         opts.addStretch(); layout.addLayout(opts)

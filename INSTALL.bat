@@ -1,7 +1,7 @@
 @echo off
 setlocal EnableExtensions
 cd /d "%~dp0"
-title Local SessionKeeper v2.48 - Installer
+title Local SessionKeeper v2.49 - Installer
 rem Switches: /quiet (no final pause)  /force (reinstall everything)  /nocuda (never download the CUDA runtime)
 set "QUIET=" & set "FORCE=" & set "NOCUDA="
 for %%A in (%*) do (
@@ -13,9 +13,9 @@ if not exist "logs" mkdir "logs"
 set "LSK_LOG=%CD%\logs\LocalSessionKeeper.log"
 echo.>>"%LSK_LOG%"
 echo =====================================================>>"%LSK_LOG%"
-echo [%date% %time%] Local SessionKeeper v2.48 installation started>>"%LSK_LOG%"
+echo [%date% %time%] Local SessionKeeper v2.49 installation started>>"%LSK_LOG%"
 echo =====================================================>>"%LSK_LOG%"
-echo Local SessionKeeper v2.48 - Complete installation
+echo Local SessionKeeper v2.49 - Complete installation
 echo Log: %LSK_LOG%
 where py >nul 2>nul
 if errorlevel 1 (echo Python 3.11 x64 launcher not found. See README. & goto :failed)

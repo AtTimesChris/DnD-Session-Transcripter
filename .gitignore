@@ -19,6 +19,7 @@
 !/CHECK_UPDATES.bat
 !/.gitignore
 !/.gitattributes
+!/CLAUDE.md
 
 # Deliberately NOT uploaded: config.json, data/, recordings/, logs/, backups/, runtime/, .venv/,
 # book folders, *.CSV, *.pdf, tests/, RUN_TESTS.bat, CHANGELOG.md and the history/notes documents.

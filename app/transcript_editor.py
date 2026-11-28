@@ -517,16 +517,32 @@ class TranscriptEditor(QDialog):
         self.find_count.setText("" if rx is None else (f"{len(rows)} segment(s)" if rows else "no matches"))
 
     def find_step(self,direction=1):
+        """v2.50: every match in turn (several in one line too), wrapping round at the end; the typing cursor stays in the
+        Find box, so pressing Enter again finds the next one. Before, the cursor moved into the line with the match
+        selected, and the next Enter replaced the selected words with a new line."""
         rows,rx=self._find_rows()
         if not rows: self.find_count.setText("no matches" if rx is not None else ""); return
+        from_find=self.find_edit.hasFocus() or self.find_bar.isAncestorOf(QApplication.focusWidget() or self.find_edit)
         cur=self.table.currentRow()
-        later=[r for r in rows if (r>cur if direction>0 else r<cur)]
-        row=(later[0] if direction>0 else later[-1]) if later else (rows[0] if direction>0 else rows[-1])
+        last=getattr(self,"_find_last",None)   # (row, start, end) of the match shown last
+        spans=lambda r:[(m.start(),m.end()) for m in rx.finditer(self._row_text(r))]
+        target=None
+        if last and last[0]==cur and cur in rows:   # another match in the same line?
+            inline=[s for s in spans(cur) if (s[0]>last[1] if direction>0 else s[0]<last[1])]
+            if inline: target=(cur,inline[0] if direction>0 else inline[-1])
+        if target is None:
+            later=[r for r in rows if (r>cur if direction>0 else r<cur)]
+            row=(later[0] if direction>0 else later[-1]) if later else (rows[0] if direction>0 else rows[-1])
+            s=spans(row); target=(row,s[0] if direction>0 else s[-1])
+        row,(a,b)=target
         self._go_to_row(row)
-        ed=self._cw(row,3); m=rx.search(ed.toPlainText())
-        if m:
-            c=ed.textCursor(); c.setPosition(m.start()); c.setPosition(m.end(),QTextCursor.KeepAnchor); ed.setTextCursor(c)
+        ed=self._cw(row,3)
+        if ed is not None:
+            c=ed.textCursor(); c.setPosition(a); c.setPosition(b,QTextCursor.KeepAnchor); ed.setTextCursor(c)
+        self._find_last=(row,a,b)
         self.find_count.setText(f"{rows.index(row)+1} of {len(rows)} segment(s)")
+        if from_find:
+            self.find_edit.setFocus()
 
     def _set_row_text(self,row,text):
         staged=self._staged_segment(row)
@@ -543,6 +559,7 @@ class TranscriptEditor(QDialog):
         repl=self.replace_edit.text()
         self._set_row_text(row,rx.sub(lambda m: repl,text,count=1))
         self.history.addItem(f"Replaced '{self.find_edit.text()}' with '{repl}' in one segment")
+        self._find_last=(row,-1,-1)   # look for the next match from the start of this line
         self._schedule_draft_save(); self.find_step(1)
 
     def replace_all(self):
@@ -1568,7 +1585,7 @@ class TranscriptEditor(QDialog):
                                         settings["compute"],v["vad_threshold"],v["beam_size"],v["style_hint"],clips=clips)
         thread=QThread(self); worker.moveToThread(thread)
         progress=QProgressDialog("Preparing…","Stop",0,0,self); progress.setWindowTitle("Re-transcribe range"); progress.setMinimumDuration(0)
-        progress.canceled.connect(worker.stop)
+        progress.canceled.connect(lambda w=worker: self._range_cancel(w))
         worker.progress.connect(progress.setLabelText)
         # Bound methods of this window (not lambdas) so the results are handled on the GUI thread.
         worker.finished.connect(self._range_finished)
@@ -1586,7 +1603,7 @@ class TranscriptEditor(QDialog):
         if not self.audio_path or not Path(self.audio_path).is_file():
             QMessageBox.information(self,"Alternatives","The recording file is not available, so Whisper cannot run on it."); return
         if getattr(self,"_range_thread",None) is not None:
-            QMessageBox.information(self,"Alternatives","A range is already being re-transcribed."); return
+            QMessageBox.information(self,"Alternatives","The last run is still stopping or running (it finishes the piece it is on). Try again in a few seconds."); return
         owner=self.parent()
         if owner is not None and hasattr(owner,"_audio_worker_running") and owner._audio_worker_running():
             QMessageBox.information(self,"Alternatives","A transcription or speaker identification is running in the main window. "
@@ -1623,7 +1640,7 @@ class TranscriptEditor(QDialog):
                                         clips=[(max(0.0,start-pad),end+pad)],variants=ALTERNATIVES,names_prompt=names)
         thread=QThread(self); worker.moveToThread(thread)
         progress=QProgressDialog("Preparing…","Stop",0,0,self); progress.setWindowTitle("Alternatives"); progress.setMinimumDuration(0)
-        progress.canceled.connect(worker.stop)
+        progress.canceled.connect(lambda w=worker: self._range_cancel(w))
         worker.progress.connect(progress.setLabelText)
         worker.finished.connect(self._alternatives_finished)
         worker.failed.connect(self._range_failed)
@@ -1680,8 +1697,16 @@ class TranscriptEditor(QDialog):
 
     def _range_failed(self,message):
         self._range_stop_ui()
+        if "Stopped." in str(message):   # v2.50: you stopped it: say so quietly, and it can be started again straight away
+            self._notify("Stopped. You can start it again.")
+            return
         QMessageBox.warning(self,"Re-transcribe range",f"Whisper could not re-transcribe the range: {message}")
         self._back_to_suggestions()
+
+    def _range_cancel(self,worker):
+        """v2.50: Stop or closing the progress window stops the run; it finishes the piece of text it is on first."""
+        worker.stop()
+        self._notify("Stopping… (it finishes the piece it is working on first, at most a few seconds)")
 
     def _play_range(self,start,end):
         self.segment_stop_ms=int(end*1000)+250
@@ -1800,9 +1825,10 @@ class TranscriptEditor(QDialog):
 
     def _edit_player_characters(self):
         from .roll_finder_dialog import PlayerCharactersDialog
+        # v2.50: players and guests only (someone mapped as Background in this session was listed too)
         players=sorted({(m.get("player") or "").strip() for k,m in self.speaker_map.items()
                         if not str(k).startswith("_") and isinstance(m,dict) and (m.get("player") or "").strip()
-                        and (m.get("role") or "")!="DM"},key=str.casefold)
+                        and (m.get("role") or "Player") in ("Player","Guest")},key=str.casefold)
         current=self.name_db.player_characters(self.campaign_id)
         # v2.46: only the players in this session's speaker map (two players were listed in one session because they
         # were saved for a later one); the others' characters are kept as they are

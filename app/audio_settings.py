@@ -48,7 +48,7 @@ class AudioSettingsDialog(QDialog):
                                    "they take this slot instead. Affects new transcriptions only.")
         self.share_voices = QCheckBox("Reuse learned voices from my other campaigns")
         self.share_voices.setChecked(bool(config.get("voiceprints_share_across_campaigns", True)))
-        self.share_voices.setToolTip("Voices you confirmed in one campaign help identify the same players in another. Only players whose name appears in this campaign are used. Different microphones or rooms make matches less reliable, and matches are listed for you to spot-check.")
+        self.share_voices.setToolTip("Voices you confirmed in one campaign help identify the same players in another. Only players whose name appears in this campaign are used; in a new campaign where nobody is named yet, everyone's learned voice is tried. Different microphones or rooms make matches less reliable, and matches are listed for you to spot-check.")
         self.vad = QDoubleSpinBox(); self.vad.setRange(0.0, 0.9); self.vad.setSingleStep(0.05); self.vad.setDecimals(2)
         self.vad.setValue(float(config.get("whisper_vad_threshold", 0.4)))
         self.vad.setToolTip("Speech-detection threshold. Lower keeps quieter speech (0.4 default here, library default 0.5). Raise it if you see invented text in silent stretches. 0 = library default.")

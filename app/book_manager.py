@@ -25,8 +25,11 @@ def book_status(sources, read_text=None, exists=os.path.isfile, mtime=os.path.ge
     if read_text is None:
         def read_text(path):
             return Path(path).read_text(encoding="utf-8-sig", errors="replace")
-    folders = sorted({str(Path(s["source_path"]).parent) for s in sources} | ({books_folder} if books_folder else set()),
-                     key=str.casefold)
+    tree = book_folder_files(books_folder) if books_folder else {}   # v2.50: subfolders too
+    folders = sorted({str(Path(s["source_path"]).parent) for s in sources} | {str(Path(p).parent) for p in tree.values()}
+                     | ({books_folder} if books_folder else set()), key=str.casefold)
+    in_tree = lambda folder: bool(books_folder) and (os.path.normcase(os.path.abspath(folder)) + os.sep).startswith(
+        os.path.normcase(os.path.abspath(books_folder)) + os.sep)
     by_hash, by_name = {}, {}
     for n, s in enumerate(sources, 1):
         by_hash.setdefault(s["content_hash"], []).append(n)
@@ -58,7 +61,7 @@ def book_status(sources, read_text=None, exists=os.path.isfile, mtime=os.path.ge
             if newer:
                 stamp = datetime.fromtimestamp(mtime(other)).strftime("%d %b %H:%M")
                 problems.append(f"a newer file with this name is in {folder} ({stamp}): Re-link to it?")
-            elif books_folder and os.path.normcase(folder) == os.path.normcase(books_folder):
+            elif in_tree(folder):
                 problems.append("not from your books folder, which has a file of this name: Re-link all to folder?")
         same = [m for m in by_hash[s["content_hash"]] if m != n]
         if same:
@@ -74,18 +77,28 @@ def book_status(sources, read_text=None, exists=os.path.isfile, mtime=os.path.ge
 BOOK_SUFFIXES = (".md", ".markdown", ".txt", ".pdf")
 
 
-def folder_status(sources, books_folder, listdir=os.listdir):
+def book_folder_files(books_folder):
+    """v2.50: {file name casefolded: path} of every book file in the books folder and its subfolders (the first one found
+    when two have the same name). Hidden folders are skipped."""
+    out = {}
+    if not books_folder or not os.path.isdir(books_folder):
+        return out
+    for root, dirs, files in os.walk(books_folder):
+        dirs[:] = sorted(d for d in dirs if not d.startswith("."))
+        for f in sorted(files):
+            if f.lower().endswith(BOOK_SUFFIXES):
+                out.setdefault(f.casefold(), os.path.join(root, f))
+    return out
+
+
+def folder_status(sources, books_folder):
     """v2.46: (files in the books folder that are not in the library, library books that could be re-linked to the
-    folder: [(source, path in folder)])."""
+    folder: [(source, path in folder)]). v2.50: subfolders are included."""
     if not books_folder:
         return [], []
-    try:
-        files = [f for f in listdir(books_folder) if f.lower().endswith(BOOK_SUFFIXES)]
-    except OSError:
-        return [], []
-    by_name = {f.casefold(): os.path.join(books_folder, f) for f in files}
+    by_name = book_folder_files(books_folder)
     in_library = {str(s["source_name"]).casefold() for s in sources}
-    missing = sorted((f for f in files if f.casefold() not in in_library), key=str.casefold)
+    missing = sorted((os.path.basename(p) for k, p in by_name.items() if k not in in_library), key=str.casefold)
     relink = []
     for s in sources:
         target = by_name.get(str(s["source_name"]).casefold())
@@ -198,8 +211,8 @@ class BookManagerDialog(QDialog):
         frow = QHBoxLayout()
         self.folder_label = QLabel(); self.folder_label.setWordWrap(True)
         choose = QPushButton("Books folder…"); choose.clicked.connect(self._choose_folder)
-        choose.setToolTip("The folder you keep your book files in. Check compares the library with it, Import starts there, "
-                          "and Re-link all to folder points every book at its copy there.")
+        choose.setToolTip("The folder you keep your book files in (its subfolders are included). Check compares the library "
+                          "with it, Import starts there, and Re-link all to folder points every book at its copy there.")
         relink_all = QPushButton("Re-link all to folder…"); relink_all.clicked.connect(self._relink_all)
         relink_all.setToolTip("Point every book whose file name is also in your books folder at the copy there, and read it "
                               "(after showing the list). Category and names are kept.")

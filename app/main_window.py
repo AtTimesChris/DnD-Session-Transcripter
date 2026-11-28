@@ -441,6 +441,7 @@ class MainWindow(QMainWindow):
         self.recording_table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.recording_table.customContextMenuRequested.connect(self._recording_context_menu)
         self.recording_table.doubleClicked.connect(lambda *_: self.view_selected_transcript() if self.view_transcript_btn.isEnabled() else None)
+        self.recording_table.viewport().installEventFilter(self); self.recording_table.installEventFilter(self)   # v2.50: click empty space / Esc clears the selection
         right_layout.addWidget(QLabel("RECORDINGS"))
         # v2.47: what to do first, while there is nothing in the list
         self.empty_hint = tone(QLabel(""), "info"); self.empty_hint.setWordWrap(True)
@@ -460,6 +461,7 @@ class MainWindow(QMainWindow):
         self.jobs_table.horizontalHeader().setStretchLastSection(False)
         self.jobs_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
         self.jobs_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.jobs_table.setContextMenuPolicy(Qt.CustomContextMenu); self.jobs_table.customContextMenuRequested.connect(self._jobs_menu)   # v2.50
         self.clear_completed_jobs_btn = QPushButton("Clear completed")
         self.clear_completed_jobs_btn.setToolTip("Remove finished and partial entries from the queue list (asks first). Recordings and transcripts are not touched.")
         self.clear_completed_jobs_btn.clicked.connect(self.clear_completed_jobs)
@@ -793,7 +795,10 @@ class MainWindow(QMainWindow):
         for task in tasks:
             r=self.jobs_table.rowCount(); self.jobs_table.insertRow(r)
             label={"transcribe":"Whisper transcription","diarize":"Speaker identification"}.get(task["task_type"],task["task_type"])
-            values=[task["campaign_name"],task["filename"],f"Task · {label} · {task['stage']}",task["last_error"] or ""]
+            stage=task["stage"]
+            if stage=="Running" and task["id"]==getattr(self,"_queue_active_task_id",None) and task["task_type"]=="transcribe" and self._last_saved_progress>=0:
+                stage=f"Running {self._last_saved_progress}%"   # v2.50: the percentage, as the transcription goes
+            values=[task["campaign_name"],task["filename"],f"Task · {label} · {stage}",task["last_error"] or ""]
             for c,value in enumerate(values): self.jobs_table.setItem(r,c,QTableWidgetItem(str(value)))
             self.jobs_table.item(r,0).setData(Qt.UserRole,task["id"])
             order_widget=QWidget(); order_layout=QHBoxLayout(order_widget); order_layout.setContentsMargins(2,0,2,0); order_layout.setSpacing(2)
@@ -804,9 +809,50 @@ class MainWindow(QMainWindow):
             up_btn.clicked.connect(lambda checked=False,tid=task["id"]: self._move_task_id(tid,-1))
             down_btn.clicked.connect(lambda checked=False,tid=task["id"]: self._move_task_id(tid,1))
             order_layout.addWidget(up_btn); order_layout.addWidget(down_btn)
+            # v2.50: take one task out of the queue (queued or failed; a running one is stopped with ■ Stop now)
+            rm_btn=QPushButton("✕"); rm_btn.setFixedWidth(28); rm_btn.setToolTip("Remove this task from the queue (the recording is not touched)")
+            rm_btn.setEnabled(task["stage"] in ("Queued","Failed"))
+            rm_btn.clicked.connect(lambda checked=False,tid=task["id"]: self._remove_task_id(tid))
+            order_layout.addWidget(rm_btn)
             self.jobs_table.setCellWidget(r,4,order_widget)
         self._autofit_columns(self.jobs_table, "jobs")
         self._update_queue_selection_controls()
+
+    def _remove_task_id(self,task_id):
+        if self.db.remove_processing_task(task_id):
+            self.logger.info("Removed queued task %s",task_id); self.refresh_jobs()
+
+    def _jobs_menu(self,pos):
+        """v2.50: right-click a queued task: move it or remove it."""
+        row=self.jobs_table.rowAt(pos.y()); item=self.jobs_table.item(row,0) if row>=0 else None
+        task_id=item.data(Qt.UserRole) if item else None
+        if not task_id: return
+        from PySide6.QtWidgets import QMenu
+        menu=QMenu(self); up=menu.addAction("Move earlier"); down=menu.addAction("Move later"); menu.addSeparator()
+        rm=menu.addAction("Remove from queue")
+        chosen=menu.exec(self.jobs_table.viewport().mapToGlobal(pos))
+        if chosen is rm: self._remove_task_id(task_id)
+        elif chosen is up: self._move_task_id(task_id,-1)
+        elif chosen is down: self._move_task_id(task_id,1)
+
+    def eventFilter(self,obj,event):
+        """v2.50: clicking empty space in the recordings list (or Esc) clears the selection."""
+        try:
+            from PySide6.QtCore import QEvent
+            table=getattr(self,"recording_table",None)
+            if table is not None and obj is table.viewport() and event.type()==QEvent.MouseButtonPress:
+                if not table.indexAt(event.position().toPoint()).isValid():
+                    self._clear_recording_selection()
+            elif table is not None and obj is table and event.type()==QEvent.KeyPress and event.key()==Qt.Key_Escape:
+                self._clear_recording_selection(); return True
+        except Exception:
+            pass
+        return super().eventFilter(obj,event)
+
+    def _clear_recording_selection(self):
+        self.recording_table.clearSelection()
+        self.recording_table.setCurrentCell(-1,-1)
+        self._update_recording_queue_controls()
 
     def _move_task_id(self,task_id,direction):
         if self.db.move_processing_task(task_id,direction): self.refresh_jobs()
@@ -860,11 +906,14 @@ class MainWindow(QMainWindow):
         if not ids:
             self._notify("Select one or more recordings first."); return
         try:
-            added=0
+            added=0; already=0
             for rid in ids:
-                if mode in {"transcribe","both"}: self.db.add_processing_task(rid,"transcribe"); added+=1
-                if mode in {"diarize","both"}: self.db.add_processing_task(rid,"diarize"); added+=1
-            self.logger.info("Queued %s processing task(s) for %s recording(s)", added, len(ids))
+                for kind in (("transcribe",) if mode=="transcribe" else ("diarize",) if mode=="diarize" else ("transcribe","diarize")):
+                    if self.db.add_processing_task(rid,kind): added+=1
+                    else: already+=1   # v2.50: the same task is already queued or running
+            self.logger.info("Queued %s processing task(s) for %s recording(s); %s already queued", added, len(ids), already)
+            if already:
+                self._notify(f"{already} task(s) were already queued or running, so they were not added again.")
             self.refresh_jobs()
         except Exception as exc: QMessageBox.critical(self,"Could not queue task",str(exc))
 
@@ -1291,7 +1340,9 @@ class MainWindow(QMainWindow):
             jobs = [j for j in self.db.all_jobs() if j["recording_id"] == self.active_recording_id and j["stage"] == "Running"]
             if jobs:
                 self.db.set_job_progress(jobs[0]["id"], value)
-                self._last_saved_progress = value
+            self._last_saved_progress = value
+            if value % 2 == 0 or value >= 99:   # v2.50: the queue list showed "Running 0%" until the task ended
+                self.refresh_jobs()
 
     def _write_run_exports(self, run_id):
         row = self.db.conn.execute("SELECT * FROM transcript_runs WHERE id=?", (run_id,)).fetchone()

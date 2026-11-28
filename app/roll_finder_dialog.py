@@ -156,6 +156,8 @@ class RollFinderDialog(QDialog, _RowPlayback):
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table.cellDoubleClicked.connect(self._double_clicked)
+        self.table.setContextMenuPolicy(Qt.CustomContextMenu)   # v2.50: right-click in the main table too
+        self.table.customContextMenuRequested.connect(self._table_menu)
         self.table.cellClicked.connect(self._cell_clicked)
         self.table.currentCellChanged.connect(lambda r, *_: self._show_context(r))
         split.addWidget(self.table)
@@ -252,6 +254,35 @@ class RollFinderDialog(QDialog, _RowPlayback):
                         "unasked": True, "added_key": key, "added_note": a.get("note", "")})
         return out
 
+    def _dm_names(self):
+        """v2.50: the DM's names in this session (their player name and "DM"), so a roll credited by the name said counts for the DM."""
+        names = {"DM"}
+        try:
+            for sid, label in (self.ctx.speakers() if hasattr(self.ctx, "speakers") else []):
+                if self.ctx.role(sid) == "DM":
+                    names.update({label, self.ctx.who(sid)})
+        except Exception:
+            pass
+        return names
+
+    def _ac_set(self, character):
+        """v2.50: the AC you set for this character in this session (right-click a row → Set AC…), or None."""
+        try:
+            v = self.overrides.get((f"ac|{character}", "ac")) if character else None
+            return int(v) if v else None
+        except (TypeError, ValueError):
+            return None
+
+    def _bladesong(self, e, summary):
+        """v2.50: (INT modifier, when said) when Bladesong / bladesinging was said in the 10 minutes before this attack."""
+        import re as _re
+        intmod = ((summary or {}).get("modifiers") or {}).get("INT")
+        if intmod is None:
+            return None
+        said = [float(s["start"]) for s in self.segments if e["start"] - 600 <= float(s["start"]) <= e["end"] + 5
+                and _re.search(r"\bblade\s?(?:song|sing(?:ing|er)?)", str(s.get("text") or ""), _re.I)]
+        return (int(intmod), said[-1]) if said else None
+
     def _person(self, sid):
         return (self.ctx.lookup(sid)[0] or self.ctx.who(sid)) if sid else ""
 
@@ -323,11 +354,16 @@ class RollFinderDialog(QDialog, _RowPlayback):
                     player = self.ctx.who(sid) if sid else ""
                 row_auto, row_evidence = auto, evidence
                 if dm_attack and not (r and r.get("kind") == "damage"):
-                    ac = e.get("ac_said") or (summary or {}).get("ac_estimate")
+                    ac_mine = self._ac_set(character)
+                    ac = ac_mine or e.get("ac_said") or (summary or {}).get("ac_estimate")
                     total = (r or {}).get("total")
                     shield = e.get("shield")
+                    blade = None if (ac_mine or e.get("ac_said")) else self._bladesong(e, summary)
+                    if blade and ac:
+                        ac += blade[0]   # v2.50: Bladesong said before the attack: + INT modifier
                     ac_now = (ac + 5) if (ac and shield) else ac   # v2.46: Shield adds 5 to AC (until the start of their next turn)
-                    label = (f"AC {ac}" + (" (said)" if e.get("ac_said") else "")) if ac else ""
+                    label = (f"AC {ac}" + (" (set by you)" if ac_mine else " (said)" if e.get("ac_said") else
+                                           f" (sheet + Bladesong {blade[0]})" if blade else "")) if ac else ""
                     if shield:
                         label = (label + f" + 5 Shield = {ac_now}") if ac else "Shield: AC + 5"
                     info = {"options": {}, "label": label}
@@ -336,6 +372,8 @@ class RollFinderDialog(QDialog, _RowPlayback):
                         on_sheet = any("shield" == str(s).casefold() for s in (summary or {}).get("spells") or [])
                         odd = "; ".join(p for p in (odd, f"{self.ctx.who(shield['speaker'])} cast Shield (“{shield['text']}”): +5 AC"
                                                     + (", on their sheet" if on_sheet else "")) if p)
+                    if blade:
+                        odd = "; ".join(p for p in (odd, f"Bladesong said at {self.fmt_time(blade[1])[:8]}: + INT {blade[0]} to AC") if p)
                     if r and r.get("dm_answer"):
                         odd = "; ".join(p for p in (odd, f"“{r['text']}” was the answer to “What did it roll?”, so it is taken as the "
                                                     f"DM's number (the line is labelled {self.ctx.who(r.get('speaker', ''))}: check "
@@ -455,7 +493,8 @@ class RollFinderDialog(QDialog, _RowPlayback):
             if not r and not x["character"] and not x["player"] and not x["dm_attack"] and x["outcome"] != "none":
                 continue
             rows.append({"kind": x["kind"], "start": x["start"], "check": check_label(e["check"]), "check_kind": e["check"][0],
-                         "player": x["player"], "character": x["character"], "role": self.ctx.role(x["sid"]) if x["sid"] else "",
+                         "player": x["player"], "character": x["character"],
+                         "role": (self.ctx.role(x["sid"]) if x["sid"] else "") or ("DM" if (x["character"] or x["player"]) in self._dm_names() else ""),
                          "outcome": x["outcome"] if x["kind"] == "roll" else "", "outcome_source": "you" if x["manual"] else "guessed",
                          "nat": (r or {}).get("nat"), "nat_dice": (r or {}).get("nat_dice") or 1, "total": (r or {}).get("total"), "adv": x.get("adv", ""),
                          "damage": damage_total(r) if r else None, "note": x["odd"], "text": (r or {}).get("text") or e["ask_text"],
@@ -576,8 +615,9 @@ class RollFinderDialog(QDialog, _RowPlayback):
             who.currentTextChanged.connect(lambda text, key=x["key"]: self._set_who(key, text))
             _set_widget(self.table, i, C_WHO, who)
             first = x["type"] == "roll" and x["key"] == x["key0"]
-            # v2.44: Asked for can be set (on the roll's first row), including which ability a save was
-            if first and not x["dm_attack"]:
+            # v2.44: Asked for can be set, including which ability a save was. v2.50: on every row of the roll (it was only on
+            # the first, so a later row had no list); it is kept for the whole roll
+            if x["type"] == "roll" and not x["dm_attack"]:
                 ask = QComboBox()
                 label = check_label(x["event"]["check"])
                 if label not in choices:
@@ -720,7 +760,9 @@ class RollFinderDialog(QDialog, _RowPlayback):
     def _time_text(self, x, time):
         if x["key"] in getattr(self, "_children", {}):
             n = len(self._children[x["key"]])
-            return ("▾ " if x["key"] in self._expanded else "▸ ") + time + f"\n     {n} more row{'s' if n != 1 else ''}"
+            end = max([c["end"] for c in self._children[x["key"]]] + [x.get("end") or x["start"]])
+            return (("▾ " if x["key"] in self._expanded else "▸ ") + time + f"\n     {n} more row{'s' if n != 1 else ''}"
+                    + f"\n     to {self.fmt_time(end)[:8]}")   # v2.50: when the attack's rows end
         if x["key"] in getattr(self, "_parent", {}):
             return "        ↳ " + time
         return time
@@ -825,6 +867,42 @@ class RollFinderDialog(QDialog, _RowPlayback):
         elif chosen is play and self.play:
             self.play(float(seg["start"]), float(seg["end"]))
 
+    def _table_menu(self, pos):
+        """v2.50: right-click a row: add a roll at its line, set the character's AC for this session, play, go to the line."""
+        from PySide6.QtWidgets import QMenu
+        r = self.table.rowAt(pos.y())
+        if not (0 <= r < len(getattr(self, "shown", []))):
+            return
+        x = self.shown[r]
+        seg = next((s for s in self.segments if s.get("_edit_id") == x["edit_id"]), None)
+        who = x.get("character") or x.get("target") or ""
+        menu = QMenu(self)
+        add = menu.addAction("Add roll here…") if seg else None
+        ac = menu.addAction(f"Set {who}'s AC for this session…") if who else None
+        menu.addSeparator()
+        play = menu.addAction("▶ Play this row")
+        go = menu.addAction("Go to line in editor")
+        chosen = menu.exec(self.table.viewport().mapToGlobal(pos))
+        if chosen is None:
+            return
+        if chosen is add:
+            self._add_roll(seg)
+        elif chosen is ac:
+            self._set_ac(who)
+        elif chosen is play:
+            self._play_row_audio(r)
+        elif chosen is go:
+            self._go(r)
+
+    def _set_ac(self, who):
+        current = self._ac_set(who) or 0
+        value, ok = QInputDialog.getInt(self, "Set AC", f"{who}'s AC in this session (for the DM's attacks; 0 = use the sheet "
+                                        "and what was said). Shield is still added when it is cast.", current, 0, 40)
+        if not ok:
+            return
+        self.ctx.set_override(f"ac|{who}", "ac", str(value) if value else "")
+        self._reload()
+
     def _add_roll(self, seg):
         """v2.46: a roll the finder missed (the DM's 22 at 26:04, a number said off-mic), added at this line."""
         import json
@@ -851,13 +929,28 @@ class RollFinderDialog(QDialog, _RowPlayback):
             x = by_key.get(key)
             if field == "added":
                 x = next((y for y in self.all_rows if y.get("type") == "roll" and y["event"].get("added_key") == key), None)
-            items.append({"key": key, "field": field, "value": value, "row": x, "when": times.get((key, field), "")})
+            item = {"key": key, "field": field, "value": value, "row": x, "when": times.get((key, field), "")}
+            if x is None and field != "added" and not key.startswith("ac|"):
+                # v2.50: the roll is found differently now (2:57:23's damage is now under the 2:56:39 attack), so this
+                # choice no longer applies to any row: offer the row now at that time
+                t = _key_time(key)
+                near = sorted((y for y in self.all_rows if y.get("type") == "roll" and abs(y["start"] - t) <= 30),
+                              key=lambda y: abs(y["start"] - t))
+                if near:
+                    item["move_to"] = near[0]["key0"] if field in ("check", "used") else near[0]["key"]
+                    item["move_row"] = near[0]
+            items.append(item)
         if not items:
             QMessageBox.information(self, "Your changes", "You have not changed anything in this transcript's roll finder."); return
         dlg = YourChangesDialog(items, self.fmt_time, self)
         dlg.exec()
+        for it in dlg.moved():   # v2.50: re-attach a choice to the row it belongs to now
+            self.ctx.set_override(it["move_to"], it["field"], it["value"])
+            self.ctx.set_override(it["key"], it["field"], "")
         undo = dlg.undone()
         if not undo:
+            if dlg.moved():
+                self._reload()
             return
         for key, field in undo:
             self.ctx.set_override(key, field, "")
@@ -1017,7 +1110,20 @@ class RollFinderDialog(QDialog, _RowPlayback):
             self._reload()
 
     def _summary(self):
-        SessionSummaryDialog(session_stats(self.log_rows()), self, rows=self.log_rows(), fmt_time=self.fmt_time).exec()
+        SessionSummaryDialog(session_stats(self.log_rows()), self, rows=self.log_rows(), fmt_time=self.fmt_time,
+                             go=self._go_time).exec()
+
+    def _go_time(self, start, session=""):
+        """v2.50: go to the row (and the editor line) at this time in this session."""
+        if session:
+            return False
+        rows = [x for x in self.all_rows if abs(x["start"] - start) < 0.6]
+        if not rows or not self.ctx.go_to:
+            return False
+        self.ctx.go_to(rows[0]["edit_id"])
+        if rows[0] in self.shown:
+            self.table.setCurrentCell(self.shown.index(rows[0]), C_TIME)
+        return True
 
     def _campaign_summary(self):
         self._save_log()
@@ -1040,9 +1146,9 @@ SUMMARY_COLS = [("rolls", "Rolls"), ("pass", "Passed"), ("fail", "Failed"), ("un
 
 
 class SessionSummaryDialog(QDialog):
-    def __init__(self, stats, parent=None, title="Session summary", rows=None, fmt_time=None):
+    def __init__(self, stats, parent=None, title="Session summary", rows=None, fmt_time=None, go=None):
         super().__init__(parent)
-        self.rows, self.fmt_time = rows or [], fmt_time or (lambda s: f"{s:.0f} s")
+        self.rows, self.fmt_time, self.go = rows or [], fmt_time or (lambda s: f"{s:.0f} s"), go
         self.setWindowTitle(title)
         self.resize(1000, 360)
         layout = QVBoxLayout(self)
@@ -1072,6 +1178,10 @@ class SessionSummaryDialog(QDialog):
                 lst.addItem((f"{m['session']} · " if m.get("session") else "") + f"{self.fmt_time(float(m['start']))[:8]}  "
                             f"{m['who']}: {m['what']}")
             lst.setMaximumHeight(140)
+            if go:   # v2.50: double-click a moment to go to it in the editor (this session's only)
+                lst.setToolTip("Double-click to go to this moment in the editor (moments from this session).")
+                lst.itemDoubleClicked.connect(lambda it, ms=moments, l=lst: self.go(float(ms[l.row(it)]["start"]),
+                                                                                   ms[l.row(it)].get("session", "")))
             bl.addWidget(lst); layout.addWidget(box)
         buttons = QDialogButtonBox(QDialogButtonBox.Close); buttons.rejected.connect(self.reject); layout.addWidget(buttons)
 
@@ -1138,7 +1248,8 @@ class AddRollDialog(QDialog):
                 "who": self.who.currentText().strip(), "note": self.note.text().strip()}
 
 
-FIELD_NAMES = {"outcome": "Pass / fail", "who": "Who", "adv": "Adv / Dis", "check": "Asked for", "used": "Used", "added": "Added roll"}
+FIELD_NAMES = {"outcome": "Pass / fail", "who": "Who", "adv": "Adv / Dis", "check": "Asked for", "used": "Used", "added": "Added roll",
+               "ac": "AC"}
 
 
 class YourChangesDialog(QDialog):
@@ -1155,7 +1266,7 @@ class YourChangesDialog(QDialog):
                      "changed while scrolling, for example) and press Undo ticked: the row goes back to the finder's own guess. "
                      "Choices made before v2.46 have no time and are listed last, in the order of the session.")
         tip.setWordWrap(True); lay.addWidget(tip)
-        heads = ["Undo", "Changed", "Roll at", "What", "Set to", "What was said"]
+        heads = ["Tick", "Changed", "Roll at", "What", "Set to", "What was said"]
         self.table = QTableWidget(len(self.items), len(heads)); self.table.setHorizontalHeaderLabels(heads)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers); self.table.setWordWrap(True)
         h = self.table.horizontalHeader()
@@ -1182,14 +1293,25 @@ class YourChangesDialog(QDialog):
             said = (x["result"] or {}).get("text") if x and x.get("type") == "roll" and x.get("result") else (
                 (x["event"]["ask_text"] if x and x.get("type") == "roll" else (x or {}).get("taken", {}).get("text", "")) if x else "")
             start = x["start"] if x else _key_time(it["key"])
+            if x is None and it.get("move_row"):
+                y = it["move_row"]
+                said = (f"⚠ no row has this choice now: the roll is found differently. Re-attach puts it on the row at "
+                        f"{fmt_time(y['start'])[:8]}: “{((y.get('result') or {}).get('text') or y['event'].get('ask_text', ''))[:80]}”")
+            elif x is None and it["field"] != "added" and not it["key"].startswith("ac|"):
+                said = "⚠ no row has this choice now, and none is near that time"
+            if it["key"].startswith("ac|"):
+                said = f"AC for {it['key'][3:]} in this session"
             for c, v in enumerate([when or "—", fmt_time(float(start))[:8], FIELD_NAMES.get(it["field"], it["field"]), value, said or ""], 1):
                 self.table.setItem(r, c, QTableWidgetItem(str(v)))
         self.table.resizeRowsToContents()
         lay.addWidget(self.table, 1)
         b = QDialogButtonBox(QDialogButtonBox.Close)
         undo = b.addButton("Undo ticked…", QDialogButtonBox.ActionRole); undo.clicked.connect(self._undo)
+        move = b.addButton("Re-attach ticked", QDialogButtonBox.ActionRole); move.clicked.connect(self._move)
+        move.setToolTip("For choices marked ⚠: put them on the row the roll is found at now.")
+        move.setEnabled(any(i.get("move_to") for i in self.items))
         b.rejected.connect(self.reject); lay.addWidget(b)
-        self._undone = []
+        self._undone, self._moved = [], []
 
     def _undo(self):
         picked = [(self.items[r]["key"], self.items[r]["field"]) for r, b in enumerate(self.boxes) if b.isChecked()]
@@ -1203,6 +1325,16 @@ class YourChangesDialog(QDialog):
 
     def undone(self):
         return self._undone
+
+    def _move(self):
+        picked = [self.items[r] for r, b in enumerate(self.boxes) if b.isChecked() and self.items[r].get("move_to")]
+        if not picked:
+            QMessageBox.information(self, "Re-attach", "Tick the choices marked ⚠ to put them on the row the roll is found at now."); return
+        self._moved = picked
+        self.accept()
+
+    def moved(self):
+        return self._moved
 
 
 def _key_time(key):

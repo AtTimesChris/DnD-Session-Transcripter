@@ -4,7 +4,7 @@ import os
 import shutil
 
 APP_NAME = "Local SessionKeeper"
-APP_VERSION = "2.49"
+APP_VERSION = "2.50"
 
 def app_root() -> Path:
     # Keep portable data alongside the application when running from source.

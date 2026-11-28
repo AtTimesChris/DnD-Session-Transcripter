@@ -608,13 +608,18 @@ def sheet(summary, check, context="", result=None, wide="", spells=None, crit=No
             opts[0] = "death save"
     except (KeyError, TypeError):
         pass
-    weapons = _mentioned_weapons(summary, context) or [w for w in summary.get("weapons") or [] if w.get("equipped")]
+    mentioned = _mentioned_weapons(summary, context)
+    # v2.50: a spell named (or chosen in Used) and no weapon: not the equipped weapons. A roll whose kind was not said
+    # with Used = Chromatic Orb showed the Scimitar.
+    spellish = not mentioned and _spell_named(summary, context)
+    weapons = mentioned or ([] if spellish and kind in ("attack", "unknown") and not (result and result.get("kind") == "damage")
+                            else [w for w in summary.get("weapons") or [] if w.get("equipped")])
     if kind in ("attack", "unknown", "damage") or (result and result.get("kind") == "damage"):
         for w in weapons:
             opts.setdefault(w["attack"], w["name"])
             if opts[w["attack"]] != w["name"] and w["name"] not in opts[w["attack"]]:
                 opts[w["attack"]] += f" / {w['name']}"
-    if kind in ("spell_attack",) or (kind == "attack" and _spell_named(summary, context)):
+    if kind in ("spell_attack",) or (kind in ("attack", "unknown") and spellish):
         for s in summary.get("spellcasting") or []:
             opts.setdefault(s["attack"], "spell attack")
     if kind == "dc" or (result and result.get("kind") == "dc"):

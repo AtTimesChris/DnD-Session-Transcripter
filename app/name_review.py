@@ -419,7 +419,10 @@ def _book_phrases(text, index, lower_vocab, found, taken, threshold, skip_known,
                         continue   # the different word must be a real word ("Shape of the" is not "Shape of Calamity")
                     sig = tuple("*" if k == j else w for k, w in enumerate(folded))
                     for name, source, level, slot in index.book_sig.get(sig, ()):
-                        if slot == j and name.split()[j].casefold() not in _PHRASE_STOP and any(
+                        # v2.50: the word that differs must be an ordinary word ("Hall" of Illusions), never the name
+                        # itself: "the Kenku" is not "<Name> the Kenku"
+                        differs = name.split()[j].casefold()
+                        if slot == j and differs not in _PHRASE_STOP and differs in lower_vocab and any(
                                 w for k, w in enumerate(folded) if k != j and w in strong):
                             cands.append((LEVEL_RANK[level], -_ratio(heard, name), name, source, level, "possible"))
             # a word that shows it is a name: capitalised in the middle of a sentence, or not an ordinary word

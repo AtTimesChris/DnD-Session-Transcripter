@@ -129,6 +129,10 @@ def armour_class(data, scores, mods=None):
     for m in mods:
         if m.get("subType") == "armor-class" and m.get("type") == "bonus" and _val(m):
             ac += _val(m); steps.append(f"+ {_val(m)} ({_source_name(m, items)})")
+        elif m.get("subType") == "armor-class" and m.get("type") == "bonus" and m.get("statId") in STATS:
+            # v2.50: "add your INT modifier to AC" (Bladesong, or a homebrew item or feat doing the same) was skipped
+            extra = _mod(scores[STATS[m["statId"]]]); ac += extra
+            steps.append(f"+ {STATS[m['statId']]} {extra} ({_source_name(m, items)})")
     for m in mods:   # "set AC to N" is a floor: the sheet keeps the higher value
         if m.get("subType") == "armor-class" and m.get("type") == "set" and _val(m):
             if _val(m) > ac:

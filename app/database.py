@@ -514,8 +514,13 @@ class Database:
 
 
     def add_processing_task(self, recording_id, task_type):
+        """Queue a task. v2.50: returns None (and adds nothing) when the same task for the same recording is already
+        queued or running (pressing Transcribe twice queued a second transcription)."""
         if task_type not in {"transcribe", "diarize"}:
             raise ValueError("Unsupported processing task type.")
+        if self.conn.execute("SELECT 1 FROM processing_tasks WHERE recording_id=? AND task_type=? AND stage IN ('Queued','Running')",
+                             (recording_id, task_type)).fetchone():
+            return None
         stamp=now_iso(); task_id=str(uuid.uuid4())
         with self.conn:
             position=self.conn.execute("SELECT COALESCE(MAX(position),0)+1 FROM processing_tasks WHERE stage='Queued'").fetchone()[0]
@@ -546,6 +551,12 @@ class Database:
             self.conn.execute("UPDATE processing_tasks SET position=? WHERE id=?",(b["position"],a["id"]))
             self.conn.execute("UPDATE processing_tasks SET position=? WHERE id=?",(a["position"],b["id"]))
         return True
+
+    def remove_processing_task(self, task_id):
+        """v2.50: take one queued or failed task out of the queue (a running one is never removed)."""
+        with self.conn:
+            cur=self.conn.execute("DELETE FROM processing_tasks WHERE id=? AND stage IN ('Queued','Failed')",(task_id,))
+        return cur.rowcount>0
 
     def clear_pending_processing_tasks(self):
         with self.conn:
@@ -837,7 +848,9 @@ class Database:
                 except Exception:
                     continue
             others = self.conn.execute("SELECT person,role,vector_json,seconds FROM speaker_voiceprints WHERE campaign_id<>? ORDER BY created_at DESC", (campaign_id,)).fetchall()
-            rows = list(rows) + [r for r in others if str(r["person"]).strip().casefold() in names]
+            # v2.50: a new campaign has no names yet (its first session is identified before you name anyone), so then every
+            # voice from your other campaigns is offered; matches are still listed in the report for you to check
+            rows = list(rows) + [r for r in others if not names or str(r["person"]).strip().casefold() in names]
             kept, count = [], {}
             for r in rows:  # newest first within each group; at most MAX per person overall
                 key = str(r["person"]).strip().casefold()

@@ -267,9 +267,32 @@ def parse_ddb_catalogue(config):
     return out
 
 
+CATALOGUE_DAYS = 1
+
+
+def _catalogue_file():
+    from .config import app_root
+    return app_root() / "data" / "ddb_catalogue.json"
+
+
 @lru_cache(maxsize=1)
 def ddb_catalogue(timeout=20):
-    return parse_ddb_catalogue(json.loads(_fetch_text(DDB_CONFIG_URL, timeout, "D&D Beyond")))
+    """D&D Beyond's list of books. v2.50: kept in data\\ddb_catalogue.json for a day, so the details and import windows
+    do not wait for it each time the app starts (it is a large download); fetched again after that, or if unreadable."""
+    path = _catalogue_file()
+    try:
+        if path.exists() and time.time() - path.stat().st_mtime < CATALOGUE_DAYS * 86400:
+            return parse_ddb_catalogue(json.loads(path.read_text(encoding="utf-8")))
+    except Exception:
+        pass
+    text = _fetch_text(DDB_CONFIG_URL, timeout, "D&D Beyond")
+    data = json.loads(text)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    except OSError:
+        pass
+    return parse_ddb_catalogue(data)
 
 
 def _title_norm(s):
@@ -361,7 +384,12 @@ def ddb_page_details(item, timeout=20):
     """Read a D&D Beyond book page for its description and the date the page was published (fills item in place).
     v2.46: separate, so the review window can open at once and fill these in the background."""
     try:
-        page = _fetch_text(item["info_link"], timeout, "D&D Beyond")
+        try:
+            page = _fetch_text(item["info_link"], timeout, "D&D Beyond")
+        except RuntimeError as exc:   # v2.50: a slow page gets one more try before it is given up
+            if "timed out" not in str(exc).casefold() and "timeout" not in str(exc).casefold():
+                raise
+            page = _fetch_text(item["info_link"], timeout + 10, "D&D Beyond")
         meta = _parse_ddb_html(page).meta
         desc = " ".join((meta.get("og:description") or meta.get("description") or "").split())
         if desc.casefold().startswith(item["title"].casefold()):

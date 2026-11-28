@@ -145,6 +145,8 @@ class RangeTranscriptionWorker(QObject):
         samples, offset, a, b = clip
         versions = []
         for n, var in enumerate(self.variants, 1):
+            if self._stop.is_set():
+                raise RuntimeError("Stopped.")   # v2.50: between versions too (it ran on to the end before)
             label = f"Version {n} of {len(self.variants)} ({var['label']})"
             self.progress.emit(label + "…")
             if var.get("pieces"):
@@ -218,6 +220,8 @@ class RangeTranscriptionWorker(QObject):
                 raise RuntimeError("The chosen range is shorter than half a second.")
             self.progress.emit(f"Loading Whisper {self.model_size} ({self.device}, {self.compute_type})…")
             model = WhisperModel(self.model_size, device=self.device, compute_type=self.compute_type)
+            if self._stop.is_set():
+                raise RuntimeError("Stopped.")
             supports = "hotwords" in inspect.signature(model.transcribe).parameters
             if self.variants:
                 self._run_variants(model, clips[0], supports, started)

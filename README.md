@@ -1,4 +1,4 @@
-# Local SessionKeeper — v2.49
+# Local SessionKeeper — v2.50
 
 Local-first Windows desktop application for D&D recording management, transcription, speaker diarization, transcript correction and campaign terminology. Transcription and diarization run locally. No paid API or subscription is required.
 
@@ -14,7 +14,11 @@ Your settings, database and recordings are created inside that folder on your ow
 
 Speaker identification also needs a free Hugging Face account: accept the terms for [pyannote Community-1](https://huggingface.co/pyannote/speaker-diarization-community-1) and create a read token. The app asks for the token the first time.
 
-## v2.49 (current)
+## v2.50 (current)
+
+- Fixes from testing: clear the recording selection (empty space / Esc); queue shows the percentage, removes single tasks and never queues the same task twice; Find + Enter steps through matches without typing into the line; the wheel moves the choice in an open list; "one word differs" only for ordinary words; roll finder spell sheet, AC from ability bonuses, Set AC and Bladesong, right-click in the main table, re-attach moved choices, Asked for on every row, DM credited by name, group end time; Alternatives stops cleanly; books folder subfolders and a cached D&D Beyond list; a new campaign uses learned voices from your other campaigns.
+
+## v2.49
 
 - Book levels per campaign (Campaign book 80%, Rules 85%, Other 92%, Off), set in D&D books… and defaulting from the campaign's Game system (now a list: 2024 / 2014 / mixed); the highest level wins. Book names of up to four words are compared, names already right are left alone, and a Campaign book name with one word different is offered as Possible ("House of Illusions" → Hall of Illusions). Spells are names in every book, and the 2014 books' spell dice are read (lower-case damage types); spell dice follow the campaign's edition.
 
